@@ -1,3 +1,5 @@
+from datetime import datetime
+from sqlalchemy.orm import aliased
 from FixedUserRequestHandler import AutoVerifiedRequestHandler
 import json
 import re
@@ -13,12 +15,13 @@ from database.Match import Match
 from database.Score import Score
 from database.Participation import Participation
 from database.TrueSkillCache import TrueSkillCache
+from database.FloatingTrophyCache import FloatingTrophyCache
 
 import constants
 
 from resultdict import resultdict
 
-def get_leaderboard_query(session):
+def get_leaderboard_query(session, at_date=None):
     participation_matches = session.query( Participation.user_id.label("user_id"), 
                                            Match.id.label("match_id"), 
                                            Match.date_recorded.label("date") ).\
@@ -26,7 +29,11 @@ def get_leaderboard_query(session):
                             
     most_recent_match_date = session.query( participation_matches.c.user_id.label("user_id"),
                                             func.max(participation_matches.c.date).label("date") ).\
-                            group_by( participation_matches.c.user_id ).subquery()
+                            group_by( participation_matches.c.user_id )
+
+    if at_date is not None:
+        most_recent_match_date = most_recent_match_date.filter(participation_matches.c.date < at_date)
+    most_recent_match_date =most_recent_match_date.subquery()
                             
     most_recent_matches = session.query( most_recent_match_date.c.user_id.label("user_id"),
                                          participation_matches.c.match_id.label("match_id"),
@@ -127,13 +134,14 @@ class LeaderboardStore(AutoVerifiedRequestHandler):
                     direction = '-'
                     column = "rating"
                     
-            if column not in ["id", "displayname", "games", "wins", "win_percentage", "rating"]:
+            if column not in ["id", "displayname", "games", "wins", "win_percentage", "rating", "form", "streak",
+                              'rank_change', 'order']:
                 column = "rating"
 
             if direction == '-':
-                    direction = desc
+                    direction = 'desc'
             else:
-                    direction = asc
+                    direction = 'asc'
             
             session = SessionFactory()
             try:
@@ -141,7 +149,7 @@ class LeaderboardStore(AutoVerifiedRequestHandler):
                         
                 total = query.count()
             
-                query = query.order_by(direction(column))
+                # query = query.order_by(direction(column))
                         
                 query = query.slice(start, stop)
                         
@@ -149,8 +157,48 @@ class LeaderboardStore(AutoVerifiedRequestHandler):
 
                 result = resultdict(result)
 
+                trophy_holder = session.query(FloatingTrophyCache).order_by(FloatingTrophyCache.id.desc()).first()
+
+                today = datetime.now().date()
+                today = datetime(today.year, today.month, today.day)
+                today = int(today.strftime('%s'))
+
+                previous_board = get_leaderboard_query(session, at_date = today).order_by(desc('rating')).all()
+                previous_ranking = {}
+                for pos, item in enumerate(previous_board,1):
+                    previous_ranking[item.id] = (pos, item.rating)
+
+                result = sorted(result, key= lambda k:k['rating'])[::-1]
                 for i,res in enumerate(result,1):
                     res['order']= i
+                    s1 = aliased(Score)
+                    game_history = session.query(Score.score.label('player_score'), Score.game_id, s1.score.label('opponent_score') ).\
+                        join(s1, sqlalchemy.and_(s1.game_id==Score.game_id, s1.user_id!=Score.user_id)).filter(Score.user_id==res['id']).\
+                        order_by(Score.game_id.desc())
+                    res['form'] = ''
+                    game_history = ['W' if game.player_score>game.opponent_score else 'L' for game in game_history]
+                    last_game = game_history[0]
+                    opposite = 'W' if last_game == 'L' else 'L'
+                    res['form'] = ''.join(reversed(game_history[0:5]))
+                    res['streak'] = '%s%s' % (last_game, game_history.index(opposite) if  opposite in game_history else len(game_history))
+                    res['rank_change'] = (previous_ranking[res['id']][0]- i) if previous_ranking.has_key(res['id']) else 0
+                    res['rating_change'] = (res['rating']-previous_ranking[res['id']][1]) if previous_ranking.has_key(res['id']) else 0
+                    res['hot_streak'] = False
+                    res['trophy_holder'] = trophy_holder is not None and trophy_holder.user_id==res['id']
+
+                result = sorted(result, key= sort_dict.get(column,lambda k:k[column]))
+                if direction == 'desc':
+                    result = result[::-1]
+
+                best_streak = None
+
+                for res in sorted(result, key= sort_dict.get('streak'))[::-1]:
+                    if (best_streak is None and int(res['streak'][1:])>3) or res['streak'] == best_streak:
+                        res['hot_streak'] = True
+                        best_streak = res['streak']
+                    else:
+                        break
+
                 data = "{}&& "+json.dumps(result)
                 self.set_header('Content-range', 'items {}-{}/{}'.format(start, stop, total))
                 self.set_header('Content-length', len(data))
@@ -160,3 +208,7 @@ class LeaderboardStore(AutoVerifiedRequestHandler):
             finally:
                 session.close()
 
+sort_dict = {
+    'streak': lambda k: int(('-' if k['streak'][0] == 'L' else '') + k['streak'][1:]),
+    'form': lambda k: k['form'][::-1]
+}

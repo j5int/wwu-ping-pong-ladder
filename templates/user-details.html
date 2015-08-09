@@ -29,7 +29,8 @@
             
             on(matches_grid, "rowClick", function(evt) {
                 var item = matches_grid.getItem(evt.rowIndex);
-                document.location.href = '/Leaderboard/Match-History/' + item.id;
+                document.location.href = '/Leaderboard/Head-to-Head/' + item.winner_id + '/' + item.opponent_id;
+{#                document.location.href = '/Leaderboard/Match-History/' + item.id;#}
             });
             
             function dateFormatter(date, rowIndex) {
@@ -116,9 +117,18 @@
         });
         </script>
         <br><br>
-        
+
 
     <table data-dojo-id="matches_grid" data-dojo-type="dojox/grid/DataGrid" style="height: 100%">
+        <script type="dojo/method" data-dojo-event="onStyleRow" data-dojo-args="row">
+            var item = this.getItem(row.index);
+            if(item){
+                var winner = this.store.getValue(item, "winner_id", null);
+                if(winner == {{ target_user.id }}){
+                    row.customStyles += "color:green;";
+                }
+            }
+        </script>
       <thead>
         <tr>
           <th field="date" width="20%">Date</th>

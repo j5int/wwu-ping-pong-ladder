@@ -59,6 +59,19 @@ class RecordMatchHandler(AutoVerifiedRequestHandler):
         if user1_id == user2_id:
             self.result("error", "Opponents must be different users.")
             return
+
+        if games[0][0] < 11 and games[0][1] < 11:
+            self.result("error", "One score must be at least 11")
+            return
+        if abs(games[0][0]-games[0][1])<2:
+            self.result("error", "Winner must win by 2")
+            return
+        if (games[0][0]<= 9 and games[0][1] >11) or (games[0][1]<= 9 and games[0][0] >11):
+            self.result("error", "The winner should not have more than 11 if the loser has fewer than 10")
+            return
+        if games[0][0] >= 10 and games[0][1] >= 10 and abs(games[0][0]-games[0][1])>2:
+            self.result("error", "Winner should only win by 2")
+            return
         
         session = SessionFactory()
         try:
